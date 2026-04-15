@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Card Shader - Mobile Ready</title>
+    <style>
+        html, body { margin: 0; padding: 0; overflow: hidden; background: #0a0a0a; width: 100%; height: 100%; touch-action: none; }
+        canvas { display: block; width: 100%; height: 100%; outline: none; }
+    </style>
+</head>
+<body>
+<script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.z = 2.2;
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.body.appendChild(renderer.domElement);
+
+    const h = 0.9;
+    const w = h * (6.3 / 8.8);
+    const geometry = new THREE.PlaneGeometry(w, h);
+
+    const loader = new THREE.TextureLoader();
+    
+    // CARICAMENTO TEXTURE
+    const baseArt = loader.load('base_art.jpg');
+    const holoMask = loader.load('holo_mask.png');
+    const textTex = loader.load('testi_leggendaria_elfi.png', (t) => t.colorSpace = THREE.SRGBColorSpace);
+    const araldaTex = loader.load('aralda.png', (t) => t.colorSpace = THREE.SRGBColorSpace);
+    const leggendariaMaskTex = loader.load('leggendaria_mask.png');
+    const albumTextTex = loader.load('album_origini I.png', (t) => t.colorSpace = THREE.SRGBColorSpace);
+    const gemmeTex = loader.load('gemme.png', (t) => t.colorSpace = THREE.SRGBColorSpace);
+
+    // PARAMETRI SALVATI IN MEMORIA
+    const sharedUniforms = {
+        lightPos: { value: 0.5 },
+        rotX: { value: 0.0 },
+        rotY: { value: 0.0 },
+        holoIntensity: { value: 1.5 } 
+    };
+
+    const voronoiShaderFunctions = `
+        float hash21(vec2 p) {
+            p = fract(p * vec2(123.34, 345.45));
+            p += dot(p, p + 34.345);
+            return fract(p.x * p.y);
+        }
+        float voronoi(vec2 x) {
+            vec2 n = floor(x), f = fract(x);
+            float md = 8.0;
+            for (int j = -1; j <= 1; j++) {
+                for (int i = -1; i <= 1; i++) {
+                    vec2 g = vec2(float(i), float(j));
+                    vec2 o = vec2(hash21(n + g), hash21(n + g + 0.5));
+                    vec2 r = g + o - f;
+                    md = min(md, dot(r, r));
+                }
+            }
+            return sqrt(md);
+        }
+    `;
+
+    // --- SHADER 1: BASE ---
+    const holoMaterial = new THREE.ShaderMaterial({
+      uniforms: { tBase: { value: baseArt }, tMask: { value: holoMask }, ...sharedUniforms },
+      vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        precision mediump float;
+        varying vec2 vUv;
+        uniform sampler2D tBase, tMask;
+        uniform float lightPos, rotX, rotY, holoIntensity;
+        ${voronoiShaderFunctions}
+        void main() {
+            float radius = 0.1027; 
+            vec2 p_clip = vUv - 0.5;
+            if (length(max(abs(p_clip) * 2.0 - 1.0 + radius, 0.0)) - radius > 0.0) discard;
+            vec3 backRGB = pow(texture2D(tBase, vUv).rgb, vec3(2.2)) * 1.2; 
+            float mask = texture2D(tMask, vUv).r;
+            vec2 motion = vec2(lightPos * 0.2, rotY * 0.13);
+            float cells = mix(voronoi((vUv + motion) * 4.0), voronoi((vUv - motion * 1.5) * 8.0 + vec2(2.7, 1.9)), 0.4);
+            float spectrum = fract(cells * 0.6 + vUv.x * 0.3 + rotY * 0.15);
+            vec3 prism = clamp(abs(mod(spectrum * 6.0 + vec3(0,4,2), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+            prism = mix(vec3(dot(prism, vec3(0.333))), prism, 0.30); 
+            float b = pow(1.0 - smoothstep(0.0, 0.20, abs((dot(vUv, normalize(vec2(0.8, 0.6))) + cells * 0.03) - (lightPos * 1.5 - 0.25 + rotY * 0.8))), 1.6) * 0.8;
+            vec3 holo = (prism * cells + (prism + 0.1) * b * cells) * holoIntensity;
+            gl_FragColor = vec4(pow(mix(backRGB, holo, mask), vec3(1.0 / 2.2)), 1.0);
+        }
+      `
+    });
+
+    // --- SHADER 2: LEGGENDARIA + ALBUM ---
+    const leggendariaHoloMaterial = new THREE.ShaderMaterial({
+        uniforms: { tMask: { value: leggendariaMaskTex }, tAlbumText: { value: albumTextTex }, ...sharedUniforms },
+        transparent: true, depthWrite: false,
+        vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+        fragmentShader: `
+            precision mediump float;
+            varying vec2 vUv;
+            uniform sampler2D tMask, tAlbumText;
+            uniform float lightPos, rotX, rotY, holoIntensity;
+            ${voronoiShaderFunctions}
+            void main() {
+                float radius = 0.1027; 
+                vec2 p_clip = vUv - 0.5;
+                if (length(max(abs(p_clip) * 2.0 - 1.0 + radius, 0.0)) - radius > 0.0) discard;
+                float m = texture2D(tMask, vUv).r;
+                vec4 txt = texture2D(tAlbumText, vUv);
+                if (m < 0.01 && txt.a < 0.01) discard; 
+                float c = mix(voronoi((vUv + vec2(lightPos * 0.2, rotY * 0.13)) * 4.0), voronoi((vUv - vec2(lightPos * 0.3, rotY * 0.2)) * 8.0 + 2.7), 0.4);
+                vec3 prism = mix(vec3(dot(clamp(abs(mod(fract(c*0.6+vUv.x*0.3+rotY*0.15)*6.0+vec3(0,4,2),6.0)-3.0)-1.0,0.0,1.0), vec3(0.333))), clamp(abs(mod(fract(c*0.6+vUv.x*0.3+rotY*0.15)*6.0+vec3(0,4,2),6.0)-3.0)-1.0,0.0,1.0), 0.30);
+                float b = pow(1.0 - smoothstep(0.0, 0.20, abs((dot(vUv, normalize(vec2(0.8, 0.6))) + c * 0.03) - (lightPos * 1.5 - 0.25 + rotY * 0.8))), 1.6) * 0.8;
+                vec3 res = mix((prism * c + (prism + 0.1) * b * c) * holoIntensity * m, txt.rgb, txt.a);
+                gl_FragColor = vec4(pow(res, vec3(1.0 / 2.2)), max(m, txt.a));
+            }
+        `
+    });
+
+    const cardBase = new THREE.Mesh(geometry, holoMaterial); scene.add(cardBase);
+    const textLayer = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: textTex, transparent: true, depthWrite: false, alphaTest: 0.01 }));
+    textLayer.position.z = 0.01; scene.add(textLayer);
+    const legLayer = new THREE.Mesh(geometry, leggendariaHoloMaterial); legLayer.position.z = 0.02; scene.add(legLayer);
+    const gemmeLayer = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: gemmeTex, transparent: true, depthWrite: false, alphaTest: 0.01 }));
+    gemmeLayer.position.z = 0.06; scene.add(gemmeLayer);
+    const araldaLayer = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map: araldaTex, transparent: true, depthWrite: false, alphaTest: 0.01 }));
+    araldaLayer.position.z = 0.12; scene.add(araldaLayer);
+
+    let tX = 0, tY = 0, cX = 0, cY = 0;
+
+    // --- INPUT GESTURE (Mouse + iPhone) ---
+    function updateInput(x, y) {
+        const nx = (x / window.innerWidth) * 2.0 - 1.0;
+        const ny = (y / window.innerHeight) * 2.0 - 1.0;
+        sharedUniforms.lightPos.value = x / window.innerWidth;
+        tY = nx * 0.6; tX = -ny * 0.4;
+    }
+
+    window.addEventListener('mousemove', (e) => updateInput(e.clientX, e.clientY));
+    window.addEventListener('touchmove', (e) => {
+        updateInput(e.touches[0].clientX, e.touches[0].clientY);
+    }, { passive: false });
+
+    function animate() {
+        requestAnimationFrame(animate);
+        cX += (tX - cX) * 0.1; cY += (tY - cY) * 0.1;
+        cardBase.rotation.x = textLayer.rotation.x = cX;
+        cardBase.rotation.y = textLayer.rotation.y = cY;
+        legLayer.rotation.x = cX * 1.07; legLayer.rotation.y = cY * 1.07;
+        legLayer.position.x = cY * 0.015; legLayer.position.y = -cX * 0.015;
+        gemmeLayer.rotation.x = cX * 1.15; gemmeLayer.rotation.y = cY * 1.15;
+        gemmeLayer.position.x = cY * 0.05; gemmeLayer.position.y = -cX * 0.05;
+        araldaLayer.rotation.x = cX * 1.25; araldaLayer.rotation.y = cY * 1.25;
+        araldaLayer.position.x = cY * 0.08; araldaLayer.position.y = -cX * 0.08;
+        sharedUniforms.rotX.value = cX; sharedUniforms.rotY.value = cY;
+        renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+</script>
+</body>
+</html>
